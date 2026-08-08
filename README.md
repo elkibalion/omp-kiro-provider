@@ -228,6 +228,11 @@ Requirements:
 - Node.js 20 or later
 - npm
 
+The test runner supports Node 26 workspaces where OMP dependencies expose
+TypeScript and Bun-only source files: it transpiles those dependencies in a
+temporary directory and provides test-only Bun/native compatibility shims. No
+runtime or published-package shim is installed.
+
 ```bash
 npm install
 npm run typecheck

@@ -66,6 +66,17 @@ interface LocalCallbackServerHandle {
   close(): Promise<void>;
 }
 
+type KiroAuthSelectionPrompt = {
+  message: string;
+  options: Array<{ id: KiroAuthMethod; label: string }>;
+  placeholder: string;
+  allowEmpty: false;
+};
+
+type KiroOAuthLoginCallbacks = OAuthLoginCallbacks & {
+  onSelect?: (prompt: KiroAuthSelectionPrompt) => Promise<string>;
+};
+
 function positiveInteger(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
 }
@@ -474,17 +485,22 @@ async function loginWithBuilderId(config: KiroOAuthConfig, callbacks: OAuthLogin
   throw configuredKiroOAuthFailure(config, "login", "Kiro OAuth device code expired before authorization completed", { body: { error: "expired_token" } });
 }
 
-async function selectAuthMethod(config: KiroOAuthConfig, callbacks: OAuthLoginCallbacks): Promise<KiroAuthMethod> {
-  const selected = (await callbacks.onPrompt({
+async function selectAuthMethod(config: KiroOAuthConfig, callbacks: OAuthLoginCallbacks): Promise<{ method: KiroAuthMethod; callbackInput?: string }> {
+  const prompt: KiroAuthSelectionPrompt = {
     message: `Choose a Kiro sign-in method (${AUTH_METHODS.join(", ")}).`,
+    options: AUTH_METHODS.map((id) => ({ id, label: config.methodLabels[id] })),
     placeholder: AUTH_METHODS.join(", "),
     allowEmpty: false,
-  })).trim().toLowerCase();
-  const method = AUTH_METHODS.find((candidate) => candidate === selected || config.methodLabels[candidate].trim().toLowerCase() === selected);
+  };
+  const loginCallbacks = callbacks as KiroOAuthLoginCallbacks;
+  const selected = (await (loginCallbacks.onSelect ? loginCallbacks.onSelect(prompt) : callbacks.onPrompt(prompt))).trim();
+  const selectedLower = selected.toLowerCase();
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(selected)) return { method: "github", callbackInput: selected };
+  const method = AUTH_METHODS.find((candidate) => candidate === selectedLower || config.methodLabels[candidate].trim().toLowerCase() === selectedLower);
   if (!method) {
     throw configuredKiroOAuthFailure(config, "login", "Kiro OAuth login method is not supported", { reason: "unsupported_auth_method", permanent: true });
   }
-  return method;
+  return { method };
 }
 
 function applyPkceParams(url: URL, codeChallenge: string, state: string): void {
@@ -600,7 +616,13 @@ async function resolveCallbackInput(callbacks: OAuthLoginCallbacks, config: Kiro
   return requestManualCallback(callbacks, config, authMethod, callbackServer.callbackUrl);
 }
 
-async function loginWithSocial(config: KiroOAuthConfig, authMethod: (typeof SOCIAL_AUTH_METHODS)[number], callbacks: OAuthLoginCallbacks, logger: DebugLogger): Promise<KiroCredentials> {
+async function loginWithSocial(
+  config: KiroOAuthConfig,
+  authMethod: (typeof SOCIAL_AUTH_METHODS)[number],
+  callbacks: OAuthLoginCallbacks,
+  logger: DebugLogger,
+  initialCallbackInput?: string,
+): Promise<KiroCredentials> {
   const pkce = createPkce();
   let expectedState: string | undefined = pkce.state;
   let codeVerifier: string | undefined = pkce.codeVerifier;
@@ -618,7 +640,7 @@ async function loginWithSocial(config: KiroOAuthConfig, authMethod: (typeof SOCI
         : `Complete Kiro ${config.methodLabels[authMethod]} sign-in, then paste the full callback URL from the browser or app prompt.`,
     });
     callbacks.onProgress?.("Waiting for Kiro authentication callback...");
-    const callbackInput = await resolveCallbackInput(callbacks, config, authMethod, callbackServer, callbackRedirectUri);
+    const callbackInput = initialCallbackInput ?? await resolveCallbackInput(callbacks, config, authMethod, callbackServer, callbackRedirectUri);
     const state = expectedState;
     const verifier = codeVerifier;
     expectedState = undefined;
@@ -639,9 +661,9 @@ async function loginWithSocial(config: KiroOAuthConfig, authMethod: (typeof SOCI
 }
 
 async function loginKiro(config: KiroOAuthConfig, callbacks: OAuthLoginCallbacks, logger: DebugLogger): Promise<KiroCredentials> {
-  const authMethod = await selectAuthMethod(config, callbacks);
-  if (authMethod === "builder-id") return loginWithBuilderId(config, callbacks, logger);
-  return loginWithSocial(config, authMethod, callbacks, logger);
+  const selection = await selectAuthMethod(config, callbacks);
+  if (selection.method === "builder-id") return loginWithBuilderId(config, callbacks, logger);
+  return loginWithSocial(config, selection.method, callbacks, logger, selection.callbackInput);
 }
 
 async function refreshWithOidc(credentials: KiroCredentials, providerId: string, config?: Pick<KiroOAuthConfig, "requestTimeoutMs">): Promise<KiroCredentials> {

@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Kiro subscription entries for `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.6-sol`, including vision and extended reasoning metadata.
 - Added the ACP runtime dependency and configuration coverage for CLI-backed subscription access.
 
+### Changed
+- The Kiro provider now forwards every active OMP tool, including terminal execution, consistently with other providers. ACP fallback uses the default Kiro CLI agent unless an agent is explicitly configured.
+- The Node test runner now supports Node 26 workspaces with TypeScript/Bun-only OMP dependencies through temporary test-only transpilation and compatibility shims.
+
+### Fixed
+- Fixed GPT-5.6-Luna requests losing terminal and other active tool permissions because Kiro CLI-shaped tool definitions were filtered from direct requests.
+- Fixed social OAuth callback handling when the host supplies an explicit method selector or a callback URL directly.
+
 ## [0.2.2] - 2026-07-03
 
 ### Changed
