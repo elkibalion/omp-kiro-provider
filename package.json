@@ -1,8 +1,8 @@
 {
-  "name": "pi-kiro-provider",
-  "version": "0.2.2",
+  "name": "omp-kiro-provider",
+  "version": "0.1.0",
   "private": false,
-  "description": "Pi extension provider for Kiro's AWS CodeWhisperer streaming API.",
+  "description": "Oh My Pi extension provider for Kiro's AWS CodeWhisperer-compatible streaming API.",
   "type": "module",
   "main": "./index.ts",
   "exports": {
@@ -16,7 +16,7 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
-  "pi": {
+  "omp": {
     "extensions": [
       "./index.ts"
     ]
@@ -28,14 +28,12 @@
     "test": "node scripts/run-tests.mjs",
     "check": "npm run typecheck && npm run --silent lint && npm run test && npm run build",
     "package:dry-run": "npm pack --dry-run",
-    "prepublishOnly": "npm run check",
-    "postinstall": "node -e \"const fs=require('fs'),cp=require('child_process'),p=require('path');const cwd=process.cwd();const normalized=cwd.split(p.sep).join('/');if(!normalized.includes('/.pi/agent/extensions/'))process.exit(0);const s=p.resolve(cwd,'../../scripts/patch-vulnerable-deps.mjs');if(!fs.existsSync(s))process.exit(0);const r=cp.spawnSync(process.execPath,[s,'--target',cwd,'--quiet'],{stdio:'inherit'});process.exit(r.status||0)\""
+    "prepublishOnly": "npm run check"
   },
   "keywords": [
-    "pi-package",
-    "pi",
-    "pi-extension",
-    "pi-coding-agent",
+    "omp-package",
+    "oh-my-pi",
+    "omp-extension",
     "kiro",
     "provider",
     "ai-provider",
@@ -45,32 +43,29 @@
   ],
   "author": "MasuRii",
   "license": "MIT",
-  "homepage": "https://github.com/MasuRii/pi-kiro-provider#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/MasuRii/pi-kiro-provider.git"
-  },
-  "bugs": {
-    "url": "https://github.com/MasuRii/pi-kiro-provider/issues"
-  },
   "engines": {
     "node": ">=20"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.74.0 || ^0.75.0 || ^0.77.0 || ^0.78.0 || ^0.79.0 || ^0.80.0",
-    "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0 || ^0.77.0 || ^0.78.0 || ^0.79.0 || ^0.80.0"
+    "@oh-my-pi/pi-ai": "^17.2.10",
+    "@oh-my-pi/pi-catalog": "^17.2.10",
+    "@oh-my-pi/pi-coding-agent": "^17.2.10"
   },
   "publishConfig": {
     "access": "public"
   },
   "devDependencies": {
+    "@oh-my-pi/pi-ai": "^17.2.10",
+    "@oh-my-pi/pi-catalog": "^17.2.10",
+    "@oh-my-pi/pi-coding-agent": "^17.2.10",
     "@types/node": "^26.1.0",
-    "typescript": "^6.0.3",
-    "@earendil-works/pi-ai": "^0.80.3",
-    "@earendil-works/pi-coding-agent": "^0.80.3"
+    "typescript": "^6.0.3"
   },
   "overrides": {
     "protobufjs": "7.6.3",
     "ws": "8.21.0"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.3.0"
   }
 }

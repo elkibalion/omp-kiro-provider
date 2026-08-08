@@ -1,21 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-
-import {
-  calculateCost,
-  createAssistantMessageEventStream,
-  type Api,
-  type AssistantMessage,
-  type AssistantMessageEventStream,
-  type Context,
-  type ImageContent,
-  type Model,
-  type ProviderHeaders,
-  type SimpleStreamOptions,
-  type TextContent,
-  type Tool,
-  type ToolCall,
-  type Usage,
-} from "@earendil-works/pi-ai";
+import { spawn } from "node:child_process";
+import { Readable, Writable } from "node:stream";
+import { ndJsonStream, client as createAcpClient, methods as acpMethods, PROTOCOL_VERSION as ACP_PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
+import { createAssistantMessageEventStream, type Api, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type ToolCall, type Usage } from "@oh-my-pi/pi-ai";
+import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 
 import type { ExtensionConfig } from "./config.js";
 import { redactSensitiveString } from "./debug-logger.js";
@@ -352,7 +340,7 @@ function uuidFromHash(value: string): string {
 }
 
 function buildSystemPrefix(context: Context): string {
-  const systemPrompt = typeof context.systemPrompt === "string" ? context.systemPrompt.trim() : "";
+  const systemPrompt = context.systemPrompt?.join("\n\n").trim() ?? "";
   if (!systemPrompt || isKiroCliDefaultAgentInstruction(systemPrompt)) return "";
   return `<Pi system instructions>\n${systemPrompt}\n</Pi system instructions>`;
 }
@@ -391,25 +379,27 @@ function setUserMessageOrigin(history: KiroConversationMessage[], currentMessage
 }
 
 function resolveMaxTokens(model: Model<Api>, options?: SimpleStreamOptions): number {
-  const requested = options?.maxTokens ?? Math.min(model.maxTokens, DEFAULT_MAX_OUTPUT_TOKENS);
+  const requested = options?.maxTokens ?? Math.min(model.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS);
   return Math.max(1, Math.min(requested, API_MAX_OUTPUT_TOKENS));
 }
 
-function getHeaderCaseInsensitive(headers: ProviderHeaders | undefined, name: string): string | undefined {
+function getHeaderCaseInsensitive(headers: Record<string, string> | undefined, name: string): string | undefined {
   if (!headers) return undefined;
   const normalizedName = name.toLowerCase();
-  for (const [headerName, headerValue] of Object.entries(headers)) {
-    if (headerName.toLowerCase() === normalizedName && typeof headerValue === "string" && headerValue.trim()) return headerValue.trim();
+  for (const headerName of Object.keys(headers)) {
+    if (headerName.toLowerCase() === normalizedName) {
+      const value = headers[headerName];
+      return value || undefined;
+    }
   }
   return undefined;
 }
 
-function omitInternalKiroHeaders(headers: ProviderHeaders | undefined): Record<string, string> | undefined {
+function omitInternalKiroHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
   if (!headers) return undefined;
   const filtered = Object.fromEntries(
     Object.entries(headers).filter(
-      (entry): entry is [string, string] =>
-        entry[0].toLowerCase() !== KIRO_PROFILE_ARN_HEADER && entry[1] !== null,
+      ([headerName]) => headerName.toLowerCase() !== KIRO_PROFILE_ARN_HEADER,
     ),
   );
   return Object.keys(filtered).length > 0 ? filtered : undefined;
@@ -457,7 +447,7 @@ function missingTokenError(envVarName: string, providerId: string): KiroAuthFail
 }
 
 function resolveKiroCredential(config: ExtensionConfig, options?: SimpleStreamOptions): ResolvedKiroCredential {
-  const optionKey = options?.apiKey;
+  const optionKey = typeof options?.apiKey === "string" ? options.apiKey : undefined;
   if (optionKey && optionKey !== config.apiKey) return { apiKey: optionKey, mode: "managed" };
   if (ENV_VAR_PATTERN.test(config.apiKey)) {
     const envKey = process.env[config.apiKey];
@@ -556,9 +546,10 @@ function isPotentiallyRefreshable(reason: KiroAuthFailureMetadata["reason"]): bo
   return reason === "unauthorized" || reason === "auth_expired" || reason === "auth_rejected";
 }
 
-function authFailureMessage(status: number, reason: KiroAuthFailureMetadata["reason"], credentialMode: KiroCredentialMode, refreshable: boolean): string {
+function authFailureMessage(status: number, reason: KiroAuthFailureMetadata["reason"], credentialMode: KiroCredentialMode, refreshable: boolean, detail: string): string {
   const unmanagedSuffix = credentialMode === "env-token" ? " Static environment token mode is unmanaged and non-rotating; refresh retry is not available for this credential source." : "";
-  return `Kiro request failed with HTTP ${status} (${reason}); refreshable=${refreshable}; credentialMode=${credentialMode}.${unmanagedSuffix}`;
+  const detailSuffix = detail && !detail.endsWith(".") ? ` Detail: ${detail}.` : detail ? ` Detail: ${detail}` : "";
+  return `Kiro request failed with HTTP ${status} (${reason}); refreshable=${refreshable}; credentialMode=${credentialMode}.${unmanagedSuffix}${detailSuffix}`;
 }
 
 export function classifyKiroHttpFailure(status: number, payload: JsonRecord, credentialMode: KiroCredentialMode, providerId = "kiro"): Error {
@@ -572,7 +563,7 @@ export function classifyKiroHttpFailure(status: number, payload: JsonRecord, cre
     credentialMode,
   };
   if (status === 401 || status === 403) {
-    return new KiroAuthFailureError(authFailureMessage(status, reason, credentialMode, metadata.refreshable), metadata);
+    return new KiroAuthFailureError(authFailureMessage(status, reason, credentialMode, metadata.refreshable, extractErrorMessage(payload, status)), metadata);
   }
   return new Error(extractErrorMessage(payload, status));
 }
@@ -599,6 +590,87 @@ function createOutput(model: Model<Api>): AssistantMessage {
     stopReason: "stop",
     timestamp: Date.now(),
   };
+}
+function acpPromptFromContext(context: Context): string {
+  const sections: string[] = [];
+  for (const message of context.messages) {
+    let text = "";
+    if (message.role === "assistant") {
+      text = assistantText(message);
+    } else if ("content" in message) {
+      text = textFromContent(message.content as string | (TextContent | ImageContent)[]);
+    }
+    if (text) sections.push(`[${message.role}]\n${text}`);
+  }
+  return sections.join("\n\n");
+}
+
+async function executeKiroAcpFallback(
+  model: Model<Api>,
+  context: Context,
+  config: ExtensionConfig,
+  stream: AssistantMessageEventStream,
+): Promise<boolean> {
+  const cliArgs = ["acp"];
+  if (config.kiroCliAgent) cliArgs.push("--agent", config.kiroCliAgent);
+  const child = spawn(config.kiroCliPath || "kiro-cli", cliArgs, {
+    cwd: process.cwd(),
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const output = createOutput(model);
+  let fullText = "";
+  let stopReason = "stop";
+  const stderr: Uint8Array[] = [];
+  child.stderr?.on("data", (chunk: Uint8Array) => stderr.push(chunk));
+  try {
+    const acpStream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>);
+    await createAcpClient({ name: "omp-kiro-provider" })
+      .onRequest(acpMethods.client.session.requestPermission, async () => ({
+        outcome: { outcome: "cancelled" as const },
+      }))
+      .connectWith(acpStream, async (connection) => {
+        await connection.request(acpMethods.agent.initialize, {
+          protocolVersion: ACP_PROTOCOL_VERSION,
+          clientInfo: { name: "omp-kiro-provider", version: "1.0.0" },
+          clientCapabilities: {},
+        });
+        const session = await connection.buildSession(process.cwd()).start();
+        const promptPromise = session.prompt(acpPromptFromContext(context));
+        for (;;) {
+          const update = await session.nextUpdate();
+          if (update.kind === "stop") {
+            stopReason = update.response.stopReason;
+            break;
+          }
+          const notification = update.notification.update;
+          if (notification.sessionUpdate === "agent_message_chunk" && notification.content.type === "text") {
+            if (!fullText) {
+              output.content = [{ type: "text", text: "" }];
+              stream.push({ type: "start", partial: output });
+              stream.push({ type: "text_start", contentIndex: 0, partial: output });
+            }
+            fullText += notification.content.text;
+            output.content = [{ type: "text", text: fullText }];
+            output.usage = buildUsage(model, { input: 0, output: Math.max(1, Math.ceil(fullText.length / 4)), cacheRead: 0, cacheWrite: 0 });
+            stream.push({ type: "text_delta", contentIndex: 0, delta: notification.content.text, partial: output });
+          }
+        }
+        await promptPromise;
+        return stopReason;
+      });
+    if (!fullText) {
+      throw new Error(`Kiro ACP returned no text${stderr.length ? `: ${Buffer.concat(stderr).toString("utf8").trim()}` : ""}`);
+    }
+    stream.push({ type: "text_end", contentIndex: 0, content: fullText, partial: output });
+    output.stopReason = "stop";
+    stream.push({ type: "done", reason: output.stopReason, message: output });
+    stream.end(output);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    child.kill();
+  }
 }
 
 function numberFrom(value: unknown): number {
@@ -629,7 +701,7 @@ function usageFromMetrics(model: Model<Api>, metrics: JsonRecord): Usage | undef
 
 function estimatedUsage(model: Model<Api>, state: KiroStreamState): Usage | undefined {
   const output = state.totalContentLength > 0 ? Math.max(1, Math.floor(state.totalContentLength / 4)) : 0;
-  const input = state.contextUsagePercentage > 0 ? Math.floor((state.contextUsagePercentage * model.contextWindow) / 100) : 0;
+  const input = state.contextUsagePercentage > 0 && model.contextWindow ? Math.floor((state.contextUsagePercentage * model.contextWindow) / 100) : 0;
   if (input <= 0 && output <= 0) return undefined;
   return buildUsage(model, { input, output, cacheRead: 0, cacheWrite: 0 });
 }
@@ -775,15 +847,15 @@ function appendKiroMeteringDiagnostic(output: AssistantMessage, payload: JsonRec
   const unit = optionalString(payload.unit);
   const unitPlural = optionalString(payload.unitPlural);
   if (usage <= 0 && !unit && !unitPlural) return;
-  output.diagnostics ??= [];
-  output.diagnostics.push({
-    type: "kiro_metering",
+  const metadata = output as AssistantMessage & {
+    kiroMetering?: Array<{ timestamp: number; usage: number; unit?: string; unitPlural?: string }>;
+  };
+  metadata.kiroMetering ??= [];
+  metadata.kiroMetering.push({
     timestamp: Date.now(),
-    details: {
-      usage,
-      ...(unit ? { unit } : {}),
-      ...(unitPlural ? { unitPlural } : {}),
-    },
+    usage,
+    ...(unit ? { unit } : {}),
+    ...(unitPlural ? { unitPlural } : {}),
   });
 }
 
@@ -875,7 +947,7 @@ async function executeKiroRequest(
   let signal: { signal: AbortSignal; dispose(): void } | undefined;
   try {
     const credential = resolveKiroCredential(config, options);
-    signal = createRequestSignal(options, options?.timeoutMs ?? config.requestTimeoutMs);
+    signal = createRequestSignal(options, config.requestTimeoutMs);
     const request = buildRequest(model, context, config, options);
     const payload = options?.onPayload ? (await options.onPayload(request, model)) ?? request : request;
     const response = await fetch(config.upstreamUrl, {
@@ -897,6 +969,10 @@ async function executeKiroRequest(
     const aborted = (signal?.signal.aborted ?? false) || error instanceof DOMException && error.name === "AbortError";
     output.stopReason = aborted ? "aborted" : "error";
     const authFailure = getKiroAuthFailure(error);
+    if (authFailure && config.cliFallback && !aborted && await executeKiroAcpFallback(model, context, config, stream)) {
+      logger.debug("request_fallback_to_kiro_cli", { model: model.id, authReason: authFailure.reason });
+      return;
+    }
     output.errorMessage = error instanceof Error ? redactSensitiveString(error.message) : "Unknown Kiro request error.";
     if (authFailure) {
       (output as AssistantMessage & { authFailure?: KiroAuthFailureMetadata; errorMetadata?: Record<string, unknown> }).authFailure = { ...authFailure };

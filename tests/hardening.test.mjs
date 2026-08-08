@@ -166,6 +166,22 @@ test("OAuth config preserves defaults while supporting social endpoints and meth
   });
 });
 
+test("ACP fallback defaults to enabled and accepts a configured CLI agent", () => {
+  const defaultConfig = loadConfig(writeConfig({})).config;
+  assert.equal(defaultConfig.cliFallback, true);
+  assert.equal(defaultConfig.kiroCliPath, undefined);
+  assert.equal(defaultConfig.kiroCliAgent, undefined);
+
+  const configured = loadConfig(writeConfig({
+    cliFallback: false,
+    kiroCliPath: "/opt/kiro-cli",
+    kiroCliAgent: "docs-no-mcp",
+  })).config;
+  assert.equal(configured.cliFallback, false);
+  assert.equal(configured.kiroCliPath, "/opt/kiro-cli");
+  assert.equal(configured.kiroCliAgent, "docs-no-mcp");
+});
+
 test("default model metadata matches Kiro ListAvailableModels discovery", () => {
   const { config } = loadConfig(writeConfig({}));
   const byId = new Map(config.models.map((model) => [model.id, model]));

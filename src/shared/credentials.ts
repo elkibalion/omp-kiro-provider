@@ -1,7 +1,7 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
-import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth";
+import type { Api, Model } from "@oh-my-pi/pi-ai";
+import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth";
 
-import { nonEmptyString } from "./validation.js";
+import { isRecord, nonEmptyString } from "./validation.js";
 
 /**
  * Header carrying the Kiro profile ARN. Previously redeclared as an
@@ -17,13 +17,13 @@ export const KIRO_PROFILE_ARN_HEADER = "x-kiro-profile-arn";
  * defined with identical bodies in index.ts and oauth.ts.
  */
 export function profileArnFromCredentials(credentials: OAuthCredentials): string | undefined {
-  const profileArn = nonEmptyString(credentials.profileArn);
+  const profileArn = "profileArn" in credentials ? nonEmptyString(credentials.profileArn) : undefined;
   if (profileArn) return profileArn;
-  const request = credentials.request;
-  if (!request || typeof request !== "object" || Array.isArray(request)) return undefined;
-  const headers = (request as { headers?: unknown }).headers;
-  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return undefined;
-  for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+  const request = "request" in credentials ? credentials.request : undefined;
+  if (!isRecord(request)) return undefined;
+  const headers = request.headers;
+  if (!isRecord(headers)) return undefined;
+  for (const [key, value] of Object.entries(headers)) {
     if (key.toLowerCase() === KIRO_PROFILE_ARN_HEADER && typeof value === "string" && value.trim()) return value.trim();
   }
   return undefined;

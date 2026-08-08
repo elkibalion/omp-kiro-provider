@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
 
 import { omitAuthorizationHeaders } from "./headers.js";
 import { isRecord, optionalString, positiveFiniteNumber as numberOr } from "./shared/index.js";
@@ -60,6 +60,9 @@ export interface ExtensionConfig {
   endpoint: KiroEndpoint;
   apiKey: string;
   requestTimeoutMs: number;
+  cliFallback: boolean;
+  kiroCliPath?: string;
+  kiroCliAgent?: string;
   profileArn?: string;
   headers: Record<string, string>;
   models: KiroProviderModelConfig[];
@@ -295,12 +298,13 @@ function normalizeModel(rawModel: unknown, defaults: Omit<KiroProviderModelConfi
 }
 
 function readRawConfig(extensionRoot: string, warnings: string[]): Record<string, unknown> {
+  const configPath = process.env.OMP_KIRO_CONFIG || join(extensionRoot, "config.json");
   try {
-    const parsed = JSON.parse(readFileSync(join(extensionRoot, "config.json"), "utf-8")) as unknown;
+    const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as unknown;
     if (isRecord(parsed)) return parsed;
-    warnings.push("config.json root must be an object; using defaults.");
+    warnings.push(`${configPath} root must be an object; using defaults.`);
   } catch (error) {
-    warnings.push(`Unable to read config.json; using defaults: ${error instanceof Error ? error.message : "unknown error"}`);
+    warnings.push(`Unable to read ${configPath}; using defaults: ${error instanceof Error ? error.message : "unknown error"}`);
   }
   return {};
 }
@@ -355,6 +359,9 @@ export function loadConfig(extensionRoot: string): ConfigLoadResult {
       upstreamUrl,
       endpoint: endpointOr(raw.endpoint, upstreamUrl),
       apiKey: stringOr(raw.apiKey, "$KIRO_ACCESS_TOKEN"),
+      cliFallback: booleanOr(raw.cliFallback, true),
+      kiroCliPath: optionalString(raw.kiroCliPath),
+      kiroCliAgent: optionalString(raw.kiroCliAgent),
       requestTimeoutMs: numberOr(raw.requestTimeoutMs, 600_000),
       profileArn: optionalString(raw.profileArn),
       headers: sanitizeHeaderConfig(stringRecordOr(raw.headers), warnings, "headers") ?? {},

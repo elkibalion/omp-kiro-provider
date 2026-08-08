@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 
-import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderInterface } from "@earendil-works/pi-ai/oauth";
+import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderInterface } from "@oh-my-pi/pi-ai/oauth";
 
 import type { KiroAuthMethod, KiroOAuthConfig } from "./config.js";
 import { redactSensitiveString } from "./debug-logger.js";
@@ -475,18 +475,16 @@ async function loginWithBuilderId(config: KiroOAuthConfig, callbacks: OAuthLogin
 }
 
 async function selectAuthMethod(config: KiroOAuthConfig, callbacks: OAuthLoginCallbacks): Promise<KiroAuthMethod> {
-  if (!callbacks.onSelect) return "builder-id";
-  const selected = await callbacks.onSelect({
-    message: "Choose a Kiro sign-in method.",
-    options: AUTH_METHODS.map((method) => ({ id: method, label: config.methodLabels[method] })),
-  });
-  if (selected === undefined) {
-    throw configuredKiroOAuthFailure(config, "login", "Kiro OAuth login was cancelled", { reason: "authorization_denied", permanent: true });
-  }
-  if (!isKiroAuthMethod(selected)) {
+  const selected = (await callbacks.onPrompt({
+    message: `Choose a Kiro sign-in method (${AUTH_METHODS.join(", ")}).`,
+    placeholder: AUTH_METHODS.join(", "),
+    allowEmpty: false,
+  })).trim().toLowerCase();
+  const method = AUTH_METHODS.find((candidate) => candidate === selected || config.methodLabels[candidate].trim().toLowerCase() === selected);
+  if (!method) {
     throw configuredKiroOAuthFailure(config, "login", "Kiro OAuth login method is not supported", { reason: "unsupported_auth_method", permanent: true });
   }
-  return selected;
+  return method;
 }
 
 function applyPkceParams(url: URL, codeChallenge: string, state: string): void {
@@ -690,7 +688,13 @@ export interface KiroOAuthProviderOptions {
   displayName?: string;
 }
 
-export function createKiroOAuthProvider(config: KiroOAuthConfig, logger: DebugLogger, options: KiroOAuthProviderOptions = {}): OAuthProviderInterface {
+export interface KiroOAuthProvider extends OAuthProviderInterface {
+  readonly modifyModels: typeof applyProfileArnToModels;
+  refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
+  getApiKey(credentials: OAuthCredentials): string;
+}
+
+export function createKiroOAuthProvider(config: KiroOAuthConfig, logger: DebugLogger, options: KiroOAuthProviderOptions = {}): KiroOAuthProvider {
   const { providerId, displayName } = resolveOAuthProviderIdentity(options, config);
   const providerConfig: KiroOAuthConfig = { ...config, providerId };
   return {

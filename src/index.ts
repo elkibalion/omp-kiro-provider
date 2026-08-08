@@ -1,9 +1,9 @@
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { registerOAuthProvider } from "@earendil-works/pi-ai/oauth";
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@oh-my-pi/pi-ai";
+import { registerOAuthProvider } from "@oh-my-pi/pi-ai/oauth";
 
 import { KIRO_API, type ExtensionConfig, loadConfig } from "./config.js";
 import { DebugLogger } from "./debug-logger.js";
@@ -129,7 +129,6 @@ export default function kiroProviderExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerProvider(config.providerId, {
-    name: config.displayName,
     baseUrl: config.upstreamUrl,
     apiKey: config.apiKey,
     api: KIRO_API,
@@ -137,13 +136,7 @@ export default function kiroProviderExtension(pi: ExtensionAPI): void {
     streamSimple,
     headers: providerHeaders,
     models: providerModels,
-    oauth: {
-      name: oauthProvider.name,
-      login: (callbacks) => oauthProvider.login(callbacks),
-      refreshToken: (credentials) => oauthProvider.refreshToken(credentials),
-      getApiKey: (credentials) => oauthProvider.getApiKey(credentials),
-      modifyModels: (models, credentials) => oauthProvider.modifyModels?.(models, credentials) ?? models,
-    },
+    oauth: oauthProvider,
   });
   emitRuntimeProviderRegistration(true);
 
