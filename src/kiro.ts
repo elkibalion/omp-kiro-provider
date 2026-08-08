@@ -778,6 +778,8 @@ async function executeKiroAcpFallback(
     stdio: ["pipe", "pipe", "pipe"],
   });
   const output = createOutput(model);
+  const permissions = acpToolPermissions(context);
+  const terminalManager = createAcpTerminalManager(process.cwd(), permissions);
   let fullText = "";
   let stopReason = "stop";
   const stderr: Uint8Array[] = [];
@@ -785,29 +787,42 @@ async function executeKiroAcpFallback(
   try {
     const acpStream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>);
     await client({ name: "omp-kiro-provider" })
-      .onRequest(methods.client.session.requestPermission, async (params: unknown) => {
-        const permissions = acpToolPermissions(context);
-        if (acpPermissionAllowed(params, permissions)) return { outcome: { outcome: "selected", optionId: "allow" } };
-        return { outcome: { outcome: "selected", optionId: "reject" } };
+      .onRequest(methods.client.session.requestPermission, async ({ params }) => {
+        const allowed = acpPermissionAllowed(params, permissions);
+        const option = params.options.find(({ kind }) => kind === (allowed ? "allow_once" : "reject_once"));
+        return option
+          ? { outcome: { outcome: "selected" as const, optionId: option.optionId } }
+          : { outcome: { outcome: "cancelled" as const } };
       })
-      .connectWith(acpStream, async (connection: unknown) => {
-        const conn = connection as {
-          request: (method: string, params: object) => Promise<unknown>;
-          onRequest: (method: string, handler: (params: unknown) => unknown) => void;
-          buildSession: (cwd: string) => { start: () => Promise<{ prompt: (p: string) => Promise<unknown>, nextUpdate: () => Promise<{ kind: string, response: { stopReason: string }, notification: { update: { sessionUpdate: string, content: { type: string, text: string } } } }> }> };
-        };
-        await conn.request(methods.agent.initialize, {
+      .onRequest(methods.client.fs.readTextFile, async ({ params }) => {
+        if (!permissions.read) throw new Error("ACP file reading is not enabled for this request.");
+        return { content: readAcpText(await readFile(params.path, "utf8"), params.line, params.limit) };
+      })
+      .onRequest(methods.client.fs.writeTextFile, async ({ params }) => {
+        if (!permissions.write) throw new Error("ACP file writing is not enabled for this request.");
+        await writeFile(params.path, params.content, "utf8");
+        return {};
+      })
+      .onRequest(methods.client.terminal.create, async ({ params }) => terminalManager.create(params))
+      .onRequest(methods.client.terminal.output, async ({ params }) => terminalManager.output(params))
+      .onRequest(methods.client.terminal.waitForExit, async ({ params }) => terminalManager.waitForExit(params))
+      .onRequest(methods.client.terminal.kill, async ({ params }) => terminalManager.kill(params))
+      .onRequest(methods.client.terminal.release, async ({ params }) => terminalManager.release(params))
+      .connectWith(acpStream, async (connection) => {
+        await connection.request(methods.agent.initialize, {
           protocolVersion: PROTOCOL_VERSION,
           clientInfo: { name: "omp-kiro-provider", version: "1.0.0" },
-          clientCapabilities: {},
+          clientCapabilities: {
+            ...(permissions.read || permissions.write ? {
+              fs: {
+                ...(permissions.read ? { readTextFile: true } : {}),
+                ...(permissions.write ? { writeTextFile: true } : {}),
+              },
+            } : {}),
+            ...(permissions.execute ? { terminal: true } : {}),
+          },
         });
-        const terminalManager = createAcpTerminalManager(process.cwd(), acpToolPermissions(context));
-        conn.onRequest(methods.client.terminal.create, terminalManager.create as (p: unknown) => unknown);
-        conn.onRequest(methods.client.terminal.output, terminalManager.output as (p: unknown) => unknown);
-        conn.onRequest(methods.client.terminal.waitForExit, terminalManager.waitForExit as (p: unknown) => unknown);
-        conn.onRequest(methods.client.terminal.kill, terminalManager.kill as (p: unknown) => unknown);
-        conn.onRequest(methods.client.terminal.release, terminalManager.release as (p: unknown) => unknown);
-        const session = await conn.buildSession(process.cwd()).start();
+        const session = await connection.buildSession(process.cwd()).start();
         const promptPromise = session.prompt(acpPromptFromContext(context));
         for (;;) {
           const update = await session.nextUpdate();
@@ -829,7 +844,6 @@ async function executeKiroAcpFallback(
           }
         }
         await promptPromise;
-        return stopReason;
       });
     if (!fullText) {
       throw new Error(`Kiro ACP returned no text${stderr.length ? `: ${Buffer.concat(stderr).toString("utf8").trim()}` : ""}`);
@@ -842,6 +856,7 @@ async function executeKiroAcpFallback(
   } catch {
     return false;
   } finally {
+    terminalManager.dispose();
     child.kill();
   }
 }
