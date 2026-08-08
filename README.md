@@ -9,8 +9,9 @@ conserva la atribución MIT del proyecto original
 [`pi-kiro-provider`](https://github.com/MasuRii/pi-kiro-provider).
 
 - **ID del proveedor:** `kiro`
-- **Modelos:** `kiro/auto`, Claude, DeepSeek, MiniMax, GLM y Qwen disponibles
-  según la cuenta de Kiro
+- **Modelos:** `kiro/auto`, Claude, DeepSeek, MiniMax, GLM, Qwen y los modelos
+  OpenAI GPT-5.6 de la suscripción (`kiro/gpt-5.6-terra`,
+  `kiro/gpt-5.6-luna`, `kiro/gpt-5.6-sol`), según disponibilidad de la cuenta
 - **Autenticación:** AWS Builder ID, Google y GitHub
 
 ## Instalación

@@ -192,6 +192,22 @@ test("default model metadata matches Kiro ListAvailableModels discovery", () => 
     maximumCacheCheckpointsPerRequest: 4,
     minimumTokensPerCacheCheckpoint: 1_024,
   });
+  for (const id of ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"]) {
+    const model = byId.get(id);
+    assert.ok(model, `${id} should be available through Kiro`);
+    assert.equal(model.contextWindow, 272_000);
+    assert.equal(model.maxTokens, 32_000);
+    assert.deepEqual(model.input, ["text", "image"]);
+    assert.deepEqual(model.thinkingLevelMap, {
+      off: "disabled",
+      minimal: "low",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "max",
+    });
+    assert.deepEqual(model.promptCaching, { supportsPromptCaching: false });
+  }
   assert.equal(byId.get("claude-opus-4.7")?.maxTokens, 32_000);
   assert.deepEqual(byId.get("claude-opus-4.7")?.thinkingLevelMap, {
     off: "disabled",

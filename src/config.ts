@@ -83,6 +83,7 @@ const KIRO_PROMPT_CACHING_DISABLED = { supportsPromptCaching: false } satisfies 
 const ANTHROPIC_REASONING_MAP = { off: "disabled", minimal: "low", low: "low", medium: "medium", high: "high", xhigh: null } satisfies ThinkingLevelMap;
 const ANTHROPIC_OPUS_4_7_REASONING_MAP = { ...ANTHROPIC_REASONING_MAP, xhigh: "xhigh" } satisfies ThinkingLevelMap;
 const ANTHROPIC_MAX_REASONING_MAP = { ...ANTHROPIC_REASONING_MAP, xhigh: "max" } satisfies ThinkingLevelMap;
+const OPENAI_GPT_5_6_REASONING_MAP = { off: "disabled", minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max" } satisfies ThinkingLevelMap;
 
 function defaultThinkingLevelMapForModel(id: string, name: string): ThinkingLevelMap | undefined {
   const identity = `${id} ${name}`.toLowerCase();
@@ -93,6 +94,9 @@ function defaultThinkingLevelMapForModel(id: string, name: string): ThinkingLeve
 
 const DEFAULT_MODELS: RawModel[] = [
   { id: "auto", name: "Auto", reasoning: true, contextWindow: 1_000_000, maxTokens: KIRO_MAX_OUTPUT_TOKENS, rateMultiplier: 1.0, rateUnit: "Credit", promptCaching: KIRO_PROMPT_CACHING_1024, importOwnership: "model-discovery" },
+  { id: "gpt-5.6-terra", name: "GPT-5.6-Terra", reasoning: true, thinkingLevelMap: OPENAI_GPT_5_6_REASONING_MAP, input: ["text", "image"], contextWindow: 272_000, maxTokens: KIRO_MAX_OUTPUT_TOKENS, promptCaching: KIRO_PROMPT_CACHING_DISABLED, importOwnership: "model-discovery" },
+  { id: "gpt-5.6-luna", name: "GPT-5.6-Luna", reasoning: true, thinkingLevelMap: OPENAI_GPT_5_6_REASONING_MAP, input: ["text", "image"], contextWindow: 272_000, maxTokens: KIRO_MAX_OUTPUT_TOKENS, promptCaching: KIRO_PROMPT_CACHING_DISABLED, importOwnership: "model-discovery" },
+  { id: "gpt-5.6-sol", name: "GPT-5.6-Sol", reasoning: true, thinkingLevelMap: OPENAI_GPT_5_6_REASONING_MAP, input: ["text", "image"], contextWindow: 272_000, maxTokens: KIRO_MAX_OUTPUT_TOKENS, promptCaching: KIRO_PROMPT_CACHING_DISABLED, importOwnership: "model-discovery" },
   { id: "claude-opus-4.7", name: "Claude Opus 4.7", reasoning: true, thinkingLevelMap: ANTHROPIC_OPUS_4_7_REASONING_MAP, contextWindow: 1_000_000, maxTokens: KIRO_MAX_OUTPUT_TOKENS, rateMultiplier: 2.2, rateUnit: "Credit", promptCaching: KIRO_PROMPT_CACHING_4096, importOwnership: "model-discovery" },
   { id: "claude-opus-4.6", name: "Claude Opus 4.6", reasoning: true, thinkingLevelMap: ANTHROPIC_MAX_REASONING_MAP, contextWindow: 1_000_000, maxTokens: KIRO_MAX_OUTPUT_TOKENS, rateMultiplier: 2.2, rateUnit: "Credit", promptCaching: KIRO_PROMPT_CACHING_4096, importOwnership: "model-discovery" },
   { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", reasoning: true, thinkingLevelMap: ANTHROPIC_MAX_REASONING_MAP, contextWindow: 1_000_000, maxTokens: KIRO_MAX_OUTPUT_TOKENS, rateMultiplier: 1.3, rateUnit: "Credit", promptCaching: KIRO_PROMPT_CACHING_1024, importOwnership: "model-discovery" },

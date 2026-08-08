@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 - Added official `kiro-cli acp` fallback for direct Kiro `401`/`403` responses, with configurable CLI path and agent profile.
+- Added Kiro subscription entries for `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.6-sol`, including vision and extended reasoning metadata.
 - Added the ACP runtime dependency and configuration coverage for CLI-backed subscription access.
 
 ## [0.2.2] - 2026-07-03
