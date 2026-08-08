@@ -12,8 +12,12 @@ const { crc32 } = await import(fromBuild("src/eventstream.js"));
 
 const encoder = new TextEncoder();
 
-function createLogger() {
-  return { debug() {}, warn() {}, error() {} };
+function createLogger(events = []) {
+  return {
+    debug(event, details) { events.push({ level: "debug", event, details }); },
+    warn(event, details) { events.push({ level: "warn", event, details }); },
+    error(event, details) { events.push({ level: "error", event, details }); },
+  };
 }
 
 function createModel() {
@@ -30,6 +34,41 @@ function createModel() {
     maxTokens: 32_000,
   };
 }
+
+test("ACP fallback keeps an invalid CLI path inside the stream error contract", async () => {
+  const originalFetch = globalThis.fetch;
+  const logs = [];
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({ message: "expired bearer token" }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+
+    const stream = createKiroStream({
+      apiKey: "token",
+      providerId: "kiro",
+      upstreamUrl: "https://kiro.example.invalid/generate",
+      requestTimeoutMs: 1_000,
+      cliFallback: true,
+      kiroCliPath: "/definitely/missing/kiro-cli",
+    }, {}, createLogger(logs))(createModel(), {
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    for await (const _event of stream) {
+      // Drain the stream so the request and fallback both complete.
+    }
+
+    const result = await stream.result();
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage, /HTTP 401 \(unauthorized\)/);
+    const failure = logs.find(({ event }) => event === "acp_fallback_failed");
+    assert.ok(failure);
+    assert.equal(failure.details.cliPath, "/definitely/missing/kiro-cli");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 function encodeHeader(name, value) {
   const nameBytes = encoder.encode(name);
