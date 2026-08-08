@@ -1,7 +1,10 @@
+import { ndJsonStream, PROTOCOL_VERSION, methods, client } from "@agentclientprotocol/sdk";
 import { createHash, randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { readFile, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
-import { ndJsonStream, client as createAcpClient, methods as acpMethods, PROTOCOL_VERSION as ACP_PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type ToolCall, type Usage } from "@oh-my-pi/pi-ai";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 
@@ -604,6 +607,163 @@ function acpPromptFromContext(context: Context): string {
   }
   return sections.join("\n\n");
 }
+type KiroAcpToolPermissions = {
+  read: boolean;
+  write: boolean;
+  execute: boolean;
+  toolNames: Set<string>;
+};
+
+interface KiroAcpTerminal {
+  child: ReturnType<typeof spawn>;
+  output: string;
+  outputByteLimit: number;
+  truncated: boolean;
+  exitStatus?: { exitCode: number | null; signal: string | null };
+  exitPromise: Promise<void>;
+}
+
+function acpToolPermissions(context: Context): KiroAcpToolPermissions {
+  const toolNames = new Set((context.tools ?? []).map((tool) => tool.name.toLowerCase()));
+  const hasTool = (...names: string[]): boolean => names.some((name) => toolNames.has(name));
+  return {
+    read: hasTool("read", "fs_read", "grep", "glob", "find"),
+    write: hasTool("write", "fs_write", "edit", "delete", "move"),
+    execute: hasTool("shell", "bash", "execute_cmd", "execute_bash", "terminal"),
+    toolNames,
+  };
+}
+
+function acpPermissionAllowed(params: unknown, permissions: KiroAcpToolPermissions): boolean {
+  const request = isRecord(params) && isRecord(params.toolCall) ? params.toolCall : undefined;
+  const metadata = request && isRecord(request._meta) && isRecord(request._meta.kiro) ? request._meta.kiro : undefined;
+  const toolName = optionalString(metadata?.toolName) ?? optionalString(request?.name);
+  if (toolName) {
+    const normalizedName = toolName.toLowerCase();
+    if (permissions.toolNames.has(normalizedName)) return true;
+    if (["read", "fs_read", "grep", "glob", "find"].includes(normalizedName)) return permissions.read;
+    if (["write", "fs_write", "edit", "delete", "move"].includes(normalizedName)) return permissions.write;
+    if (["shell", "bash", "execute_cmd", "execute_bash", "terminal"].includes(normalizedName)) return permissions.execute;
+    return false;
+  }
+  const kind = optionalString(request?.kind);
+  if (kind === "read" || kind === "search") return permissions.read;
+  if (kind === "edit" || kind === "delete" || kind === "move") return permissions.write;
+  if (kind === "execute") return permissions.execute;
+  return false;
+}
+
+function readAcpText(content: string, line?: number | null, limit?: number | null): string {
+  if (line == null && limit == null) return content;
+  const lines = content.split(/\r?\n/);
+  const start = Math.max(0, Math.floor(line ?? 1) - 1);
+  const count = limit == null ? lines.length - start : Math.max(0, Math.floor(limit));
+  return lines.slice(start, start + count).join("\n");
+}
+
+function appendAcpTerminalOutput(terminal: KiroAcpTerminal, chunk: Uint8Array | string): void {
+  const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+  if (!text) return;
+  const combined = terminal.output + text;
+  const bytes = Buffer.from(combined, "utf8");
+  if (bytes.byteLength <= terminal.outputByteLimit) {
+    terminal.output = combined;
+    return;
+  }
+  terminal.output = bytes.subarray(bytes.byteLength - terminal.outputByteLimit).toString("utf8");
+  terminal.truncated = true;
+}
+
+function createAcpTerminalManager(workingDirectory: string, permissions: KiroAcpToolPermissions) {
+  const terminals = new Map<string, KiroAcpTerminal>();
+  const getTerminal = (terminalId: string): KiroAcpTerminal => {
+    const terminal = terminals.get(terminalId);
+    if (!terminal) throw new Error(`Unknown ACP terminal: ${terminalId}`);
+    return terminal;
+  };
+
+  const create = async (params: { command: string; args?: string[]; env?: Array<{ name: string; value: string }>; cwd?: string | null; outputByteLimit?: number | null }) => {
+    if (!permissions.execute) throw new Error("ACP terminal access is not enabled for this request.");
+    const outputByteLimit = typeof params.outputByteLimit === "number" && Number.isFinite(params.outputByteLimit) && params.outputByteLimit > 0
+      ? Math.floor(params.outputByteLimit)
+      : 1_000_000;
+    const child = spawn(params.command, params.args ?? [], {
+      cwd: resolve(params.cwd || workingDirectory),
+      env: { ...process.env, ...Object.fromEntries((params.env ?? []).map((entry) => [entry.name, entry.value])) },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const terminal: KiroAcpTerminal = {
+      child,
+      output: "",
+      outputByteLimit,
+      truncated: false,
+      exitPromise: Promise.resolve(),
+    };
+    terminal.exitPromise = new Promise<void>((resolveExit) => {
+      let settled = false;
+      const finish = (exitCode: number | null, signal: string | null): void => {
+        if (settled) return;
+        settled = true;
+        terminal.exitStatus = { exitCode, signal };
+        resolveExit();
+      };
+      child.once("exit", (exitCode, signal) => finish(exitCode, signal));
+      child.once("error", (error) => {
+        appendAcpTerminalOutput(terminal, `${error instanceof Error ? error.message : String(error)}\n`);
+        finish(null, "error");
+      });
+    });
+    child.stdout?.on("data", (chunk: Uint8Array) => appendAcpTerminalOutput(terminal, chunk));
+    child.stderr?.on("data", (chunk: Uint8Array) => appendAcpTerminalOutput(terminal, chunk));
+    const terminalId = `kiro-terminal-${randomUUID()}`;
+    terminals.set(terminalId, terminal);
+    return { terminalId };
+  };
+
+  const output = async (params: { terminalId: string }) => {
+    const terminal = getTerminal(params.terminalId);
+    return {
+      output: terminal.output,
+      truncated: terminal.truncated,
+      ...(terminal.exitStatus ? { exitStatus: terminal.exitStatus } : {}),
+    };
+  };
+
+  const waitForExit = async (params: { terminalId: string }) => {
+    const terminal = getTerminal(params.terminalId);
+    await terminal.exitPromise;
+    return {
+      exitCode: terminal.exitStatus?.exitCode ?? null,
+      signal: terminal.exitStatus?.signal ?? null,
+    };
+  };
+
+  const release = async (params: { terminalId: string }) => {
+    const terminal = getTerminal(params.terminalId);
+    if (!terminal.exitStatus) terminal.child.kill();
+    terminals.delete(params.terminalId);
+    return {};
+  };
+
+  const kill = async (params: { terminalId: string }) => {
+    getTerminal(params.terminalId).child.kill();
+    return {};
+  };
+
+  return {
+    create,
+    output,
+    waitForExit,
+    release,
+    kill,
+    dispose(): void {
+      for (const terminal of terminals.values()) {
+        if (!terminal.exitStatus) terminal.child.kill();
+      }
+      terminals.clear();
+    },
+  };
+}
 
 async function executeKiroAcpFallback(
   model: Model<Api>,
@@ -624,17 +784,30 @@ async function executeKiroAcpFallback(
   child.stderr?.on("data", (chunk: Uint8Array) => stderr.push(chunk));
   try {
     const acpStream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>);
-    await createAcpClient({ name: "omp-kiro-provider" })
-      .onRequest(acpMethods.client.session.requestPermission, async () => ({
-        outcome: { outcome: "cancelled" as const },
-      }))
-      .connectWith(acpStream, async (connection) => {
-        await connection.request(acpMethods.agent.initialize, {
-          protocolVersion: ACP_PROTOCOL_VERSION,
+    await client({ name: "omp-kiro-provider" })
+      .onRequest(methods.client.session.requestPermission, async (params: unknown) => {
+        const permissions = acpToolPermissions(context);
+        if (acpPermissionAllowed(params, permissions)) return { outcome: { outcome: "selected", optionId: "allow" } };
+        return { outcome: { outcome: "selected", optionId: "reject" } };
+      })
+      .connectWith(acpStream, async (connection: unknown) => {
+        const conn = connection as {
+          request: (method: string, params: object) => Promise<unknown>;
+          onRequest: (method: string, handler: (params: unknown) => unknown) => void;
+          buildSession: (cwd: string) => { start: () => Promise<{ prompt: (p: string) => Promise<unknown>, nextUpdate: () => Promise<{ kind: string, response: { stopReason: string }, notification: { update: { sessionUpdate: string, content: { type: string, text: string } } } }> }> };
+        };
+        await conn.request(methods.agent.initialize, {
+          protocolVersion: PROTOCOL_VERSION,
           clientInfo: { name: "omp-kiro-provider", version: "1.0.0" },
           clientCapabilities: {},
         });
-        const session = await connection.buildSession(process.cwd()).start();
+        const terminalManager = createAcpTerminalManager(process.cwd(), acpToolPermissions(context));
+        conn.onRequest(methods.client.terminal.create, terminalManager.create as (p: unknown) => unknown);
+        conn.onRequest(methods.client.terminal.output, terminalManager.output as (p: unknown) => unknown);
+        conn.onRequest(methods.client.terminal.waitForExit, terminalManager.waitForExit as (p: unknown) => unknown);
+        conn.onRequest(methods.client.terminal.kill, terminalManager.kill as (p: unknown) => unknown);
+        conn.onRequest(methods.client.terminal.release, terminalManager.release as (p: unknown) => unknown);
+        const session = await conn.buildSession(process.cwd()).start();
         const promptPromise = session.prompt(acpPromptFromContext(context));
         for (;;) {
           const update = await session.nextUpdate();
@@ -950,6 +1123,14 @@ async function executeKiroRequest(
     signal = createRequestSignal(options, config.requestTimeoutMs);
     const request = buildRequest(model, context, config, options);
     const payload = options?.onPayload ? (await options.onPayload(request, model)) ?? request : request;
+    const currentContext = request.conversationState.currentMessage.userInputMessage.userInputMessageContext;
+    logger.debug("request_prepared", {
+      model: model.id,
+      endpoint: config.endpoint,
+      toolNames: currentContext?.tools?.map((entry) => entry.toolSpecification.name) ?? [],
+      toolResultCount: currentContext?.toolResults?.length ?? 0,
+      historyLength: request.conversationState.history.length,
+    });
     const response = await fetch(config.upstreamUrl, {
       method: "POST",
       headers: buildHeaders(config, credential.apiKey, options),
