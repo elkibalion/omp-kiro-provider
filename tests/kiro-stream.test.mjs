@@ -85,6 +85,39 @@ function createResponse(events) {
   }), { status: 200 });
 }
 
+test("Kiro forwards every active tool, including terminal access", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestPayload;
+  try {
+    globalThis.fetch = async (_url, init) => {
+      requestPayload = JSON.parse(init.body);
+      return createResponse([["metricsEvent", { inputTokens: 1, outputTokens: 1 }]]);
+    };
+
+    const stream = createKiroStream({
+      apiKey: "token",
+      providerId: "kiro",
+      upstreamUrl: "https://kiro.example.invalid/generate",
+      requestTimeoutMs: 1_000,
+    }, {}, createLogger())(createModel(), {
+      messages: [{ role: "user", content: "run the tests" }],
+      tools: [
+        { name: "bash", description: "Run commands in the terminal", parameters: { type: "object" } },
+        { name: "read", description: "Read files", parameters: { type: "object" } },
+      ],
+    });
+
+    for await (const _event of stream) {
+      // Drain the response so the request completes.
+    }
+
+    const tools = requestPayload.conversationState.currentMessage.userInputMessage.userInputMessageContext.tools;
+    assert.deepEqual(tools.map((entry) => entry.toolSpecification.name), ["bash", "read"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Kiro toolUseEvent updates same-id tool calls with latest complete arguments", async () => {
   const originalFetch = globalThis.fetch;
   try {

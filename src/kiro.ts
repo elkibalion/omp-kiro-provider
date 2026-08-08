@@ -168,35 +168,9 @@ function toolSchemaForRequest(tool: Tool): unknown {
   return tool.parameters ?? { type: "object", properties: {} };
 }
 
-function descriptionIncludesAll(description: string, terms: string[]): boolean {
-  return terms.every((term) => description.includes(term));
-}
-
-function isKiroCliInjectedTool(tool: Tool): boolean {
-  const description = tool.description.toLowerCase();
-  if (tool.name === "code") return descriptionIncludesAll(description, ["code intelligence", "ast"]);
-  if (tool.name === "dummy") return descriptionIncludesAll(description, ["dummy tool", "list of available tools"]);
-  if (tool.name === "execute_cmd") return description.includes("windows command");
-  if (tool.name === "fs_read") return descriptionIncludesAll(description, ["available modes", "line", "directory"]);
-  if (tool.name === "fs_write") return description.includes("str_replace") || description.includes("file_text");
-  if (tool.name === "glob") return descriptionIncludesAll(description, ["totalfiles", "filepath"]);
-  if (tool.name === "grep") return descriptionIncludesAll(description, ["semantic code understanding", "rg", "ag"]);
-  if (tool.name === "introspect") return descriptionIncludesAll(description, ["chat application's own features", "slash commands"]);
-  if (tool.name === "report_issue") return descriptionIncludesAll(description, ["pre-filled", "conversation transcript", "chat request ids"]);
-  if (tool.name === "session") return descriptionIncludesAll(description, ["adjust session settings", "introspect tool first"]);
-  if (tool.name === "use_aws") return descriptionIncludesAll(description, ["aws cli", "service", "operation"]);
-  if (tool.name === "use_subagent") return description.includes("critical delegation tool");
-  if (tool.name === "web_fetch") return descriptionIncludesAll(description, ["selective", "truncated", "full"]);
-  if (tool.name === "web_search") return descriptionIncludesAll(description, ["websearch", "outside the model's training data"]);
-  if (tool.name === "shell") return description.includes("command");
-  return false;
-}
-
 function buildKiroTools(tools: Tool[] | undefined): KiroToolSpecification[] | undefined {
   if (!tools || tools.length === 0) return undefined;
-  const filteredTools = tools.filter((tool) => !isKiroCliInjectedTool(tool));
-  if (filteredTools.length === 0) return undefined;
-  return filteredTools.map((tool) => ({
+  return tools.map((tool) => ({
     toolSpecification: {
       name: tool.name,
       description: tool.description.trim() || `Tool: ${tool.name}`,
