@@ -100,10 +100,12 @@ const KIRO_CODEWHISPERER_SDK_USER_AGENT = "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0";
 const KIRO_CODEWHISPERER_AMZ_USER_AGENT = "aws-sdk-js/3.0.0 kiro-ide/1.0.0";
 const KIRO_Q_SDK_USER_AGENT = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.14474 os/windows lang/rust/1.92.0 md/appVersion-2.3.0 app/AmazonQ-For-CLI";
 const KIRO_Q_AMZ_USER_AGENT = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.14474 os/windows lang/rust/1.92.0 m/F app/AmazonQ-For-CLI";
+const KIRO_API_KEY_USER_AGENT = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17593 os/macos lang/rust/1.92.0 md/appVersion-2.10.0 app/AmazonQ-For-CLI";
+const KIRO_API_KEY_AMZ_USER_AGENT = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17593 os/macos lang/rust/1.92.0 m/F app/AmazonQ-For-CLI";
 const KIRO_CLI_CONTEXT_BLOCK_PATTERN = /--- CONTEXT ENTRY BEGIN ---[\s\S]*?--- CONTEXT ENTRY END ---\s*/g;
 const KIRO_CLI_USER_MESSAGE_PATTERN = /--- USER MESSAGE BEGIN ---([\s\S]*?)--- USER MESSAGE END ---/g;
 
-export type KiroCredentialMode = "managed" | "env-token" | "static-config";
+export type KiroCredentialMode = "managed" | "env-token" | "static-config" | "api-key";
 
 export interface KiroAuthFailureMetadata {
   providerId: string;
@@ -388,7 +390,7 @@ function buildRequest(model: Model<Api>, context: Context, config: ExtensionConf
   prependSystemInstructionHistory(history, buildSystemPrefix(context), model.id);
   const amazonQEndpoint = isAmazonQEndpoint(config);
   if (amazonQEndpoint) setUserMessageOrigin(history, currentMessage, "KIRO_CLI");
-  const profileArn = getHeaderCaseInsensitive(options?.headers, KIRO_PROFILE_ARN_HEADER) ?? config.profileArn;
+  const profileArn = config.authMode === "api-key" ? undefined : getHeaderCaseInsensitive(options?.headers, KIRO_PROFILE_ARN_HEADER) ?? config.profileArn;
   const conversationState: KiroRequest["conversationState"] = {
     chatTriggerType: "MANUAL",
     conversationId: uuidFromHash((firstContent || currentMessage.userInputMessage.content).slice(0, 4_000)) || randomUUID(),
@@ -396,7 +398,7 @@ function buildRequest(model: Model<Api>, context: Context, config: ExtensionConf
     history,
   };
   if (amazonQEndpoint) {
-    conversationState.agentContinuationId = randomUUID();
+    if (config.authMode !== "api-key") conversationState.agentContinuationId = randomUUID();
     conversationState.agentTaskType = "vibe";
   }
   const request: KiroRequest = { conversationState };
@@ -423,7 +425,25 @@ function missingTokenError(envVarName: string, providerId: string): KiroAuthFail
   );
 }
 
+function missingApiKeyError(envVarName: string, providerId: string): KiroAuthFailureError {
+  return new KiroAuthFailureError(
+    `No Kiro API key found in ${envVarName}; deploy the shell_ai Bitwarden secret or export ${envVarName}.`,
+    {
+      providerId,
+      status: 0,
+      reason: "missing_token",
+      refreshable: false,
+      credentialMode: "api-key",
+    },
+  );
+}
 function resolveKiroCredential(config: ExtensionConfig, options?: SimpleStreamOptions): ResolvedKiroCredential {
+  if (config.authMode === "api-key") {
+    const envVarName = ENV_VAR_PATTERN.test(config.apiKey) ? config.apiKey : "KIRO_API_KEY";
+    const apiKey = process.env[envVarName];
+    if (!apiKey) throw missingApiKeyError(envVarName, config.providerId);
+    return { apiKey, mode: "api-key" };
+  }
   const optionKey = typeof options?.apiKey === "string" ? options.apiKey : undefined;
   if (optionKey && optionKey !== config.apiKey) return { apiKey: optionKey, mode: "managed" };
   if (ENV_VAR_PATTERN.test(config.apiKey)) {
@@ -438,12 +458,13 @@ function resolveKiroCredential(config: ExtensionConfig, options?: SimpleStreamOp
 
 export function buildHeaders(config: ExtensionConfig, apiKey: string, options?: SimpleStreamOptions): Record<string, string> {
   const amazonQEndpoint = isAmazonQEndpoint(config);
+  const apiKeyAuth = config.authMode === "api-key";
   const headers: Record<string, string> = amazonQEndpoint ? {
     "Content-Type": "application/x-amz-json-1.0",
     Accept: "*/*",
     "X-Amz-Target": KIRO_STREAMING_TARGET,
-    "User-Agent": KIRO_Q_SDK_USER_AGENT,
-    "X-Amz-User-Agent": KIRO_Q_AMZ_USER_AGENT,
+    "User-Agent": apiKeyAuth ? KIRO_API_KEY_USER_AGENT : KIRO_Q_SDK_USER_AGENT,
+    "X-Amz-User-Agent": apiKeyAuth ? KIRO_API_KEY_AMZ_USER_AGENT : KIRO_Q_AMZ_USER_AGENT,
     "Amz-Sdk-Request": "attempt=1; max=3",
     "Amz-Sdk-Invocation-Id": randomUUID(),
     "x-amzn-codewhisperer-optout": "false",
@@ -462,6 +483,7 @@ export function buildHeaders(config: ExtensionConfig, apiKey: string, options?: 
     ...omitAuthorizationHeaders(omitInternalKiroHeaders(config.headers)),
     ...omitAuthorizationHeaders(omitInternalKiroHeaders(options?.headers)),
   };
+  if (apiKeyAuth) headers.TokenType = "API_KEY";
   headers.Authorization = `Bearer ${apiKey}`;
   return headers;
 }
@@ -1160,7 +1182,7 @@ async function executeKiroRequest(
     const aborted = (signal?.signal.aborted ?? false) || error instanceof DOMException && error.name === "AbortError";
     output.stopReason = aborted ? "aborted" : "error";
     const authFailure = getKiroAuthFailure(error);
-    if (authFailure && config.cliFallback && !aborted && await executeKiroAcpFallback(model, context, config, logger, stream)) {
+    if (authFailure && authFailure.credentialMode !== "api-key" && config.cliFallback && !aborted && await executeKiroAcpFallback(model, context, config, logger, stream)) {
       logger.debug("request_fallback_to_kiro_cli", { model: model.id, authReason: authFailure.reason });
       return;
     }

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- Added direct Kiro runtime authentication with `KIRO_API_KEY`, including the required `TokenType: API_KEY` header and Kiro CLI-compatible request identity.
+- API-key mode ignores OMP's saved OAuth token and profile ARN, and does not retry an authentication failure through `kiro-cli`.
 - Added official `kiro-cli acp` fallback for direct Kiro `401`/`403` responses, with configurable CLI path and agent profile.
 - Added Kiro subscription entries for `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.6-sol`, including vision and extended reasoning metadata.
 - Added the ACP runtime dependency and configuration coverage for CLI-backed subscription access.

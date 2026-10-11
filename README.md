@@ -1,9 +1,9 @@
 # omp-kiro-provider
 
 An [Oh My Pi](https://github.com/canstralien/oh-my-pi) extension that registers
-Kiro as a streaming model provider. It supports OAuth-managed credentials, Kiro
-CodeWhisperer-compatible requests, tool calls, and an optional `kiro-cli acp`
-fallback when the direct endpoint rejects a request.
+Kiro as a streaming model provider. It supports OAuth-managed credentials or a
+Kiro API key, Kiro runtime event streams, tool calls, and an optional
+`kiro-cli acp` fallback for OAuth mode.
 
 This project retains the MIT attribution of the original
 [`pi-kiro-provider`](https://github.com/MasuRii/pi-kiro-provider) project.
@@ -13,7 +13,7 @@ This project retains the MIT attribution of the original
 | Capability | Support |
 | --- | --- |
 | Provider ID | `kiro` |
-| Authentication | AWS Builder ID, Google, and GitHub OAuth |
+| Authentication | AWS Builder ID, Google, GitHub OAuth, or Kiro API key |
 | Streaming | AWS EventStream responses |
 | Models | Kiro subscription catalog, including GPT-5.6 Terra, Luna, and Sol when entitled |
 | Tool calls | Direct Kiro tool calls and ACP filesystem/terminal requests |
@@ -64,6 +64,26 @@ kiro/gpt-5.6-terra
 kiro/gpt-5.6-luna
 kiro/gpt-5.6-sol
 ```
+
+### Direct Kiro API-key authentication
+
+Kiro API keys are programmatic credentials for headless Kiro access. Kiro documents `KIRO_API_KEY` for CLI automation and makes key generation available to eligible paid plans; see [Kiro CLI authentication](https://kiro.dev/docs/cli/authentication/).
+
+Configure the provider to send the key directly to Kiro's runtime API, without the Kiro CLI process or OMP's saved OAuth bearer:
+
+```json
+{
+  "authMode": "api-key",
+  "apiKey": "KIRO_API_KEY",
+  "upstreamUrl": "https://runtime.us-east-1.kiro.dev/",
+  "endpoint": "amazonq",
+  "cliFallback": false
+}
+```
+
+Export `KIRO_API_KEY` before starting OMP. API-key mode uses the `TokenType: API_KEY` runtime header and ignores OMP OAuth credentials and profile ARN headers. It does not bypass the Kiro account's subscription or usage limits.
+
+The runtime protocol and required client headers are undocumented; this mode follows the protocol implemented by [kirocc](https://github.com/d-kuro/kirocc) and may break if Kiro changes it. Use OAuth mode if the direct runtime path stops working.
 
 ## Tools and permissions
 
@@ -157,8 +177,9 @@ export OMP_KIRO_CONFIG="$HOME/.config/omp/kiro.json"
 | `displayName` | Name shown by OMP. |
 | `upstreamUrl` | Direct streaming endpoint URL. |
 | `endpoint` | Endpoint format: `codewhisperer` or `amazonq`. |
-| `apiKey` | Credential source. OAuth-managed credentials are preferred. Environment-token mode is supported but unmanaged. |
-| `cliFallback` | Enables `kiro-cli acp` after a direct `401` or `403`. |
+| `authMode` | `oauth` (default) or `api-key` for direct runtime API authentication. |
+| `apiKey` | Credential source. OAuth mode uses OMP-managed credentials or an environment token; API-key mode resolves the configured environment-variable name, defaulting to `KIRO_API_KEY`. |
+| `cliFallback` | Enables `kiro-cli acp` after OAuth-mode `401`/`403` responses. API-key mode never retries through the CLI. |
 | `kiroCliPath` | Path or command name for the Kiro CLI executable. |
 | `kiroCliAgent` | Optional profile passed as `kiro-cli acp --agent <profile>`. |
 | `requestTimeoutMs` | Direct-stream and OAuth timeout in milliseconds. |

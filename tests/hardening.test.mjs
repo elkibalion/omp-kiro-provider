@@ -166,6 +166,22 @@ test("OAuth config preserves defaults while supporting social endpoints and meth
   });
 });
 
+test("Kiro API-key configuration uses the dedicated auth mode and token header", () => {
+  const { config } = loadConfig(writeConfig({
+    authMode: "api-key",
+    apiKey: "KIRO_API_KEY",
+    endpoint: "amazonq",
+    upstreamUrl: "https://runtime.us-east-1.kiro.dev/",
+  }));
+
+  assert.equal(config.authMode, "api-key");
+  assert.equal(config.apiKey, "KIRO_API_KEY");
+  const headers = buildHeaders(config, "ksk_test_key");
+  assert.equal(headers.TokenType, "API_KEY");
+  assert.equal(headers.Authorization, "Bearer ksk_test_key");
+  assert.match(headers["User-Agent"], /appVersion-2\.10\.0/);
+});
+
 test("ACP fallback defaults to enabled and accepts a configured CLI agent", () => {
   const defaultConfig = loadConfig(writeConfig({})).config;
   assert.equal(defaultConfig.cliFallback, true);

@@ -69,6 +69,63 @@ test("ACP fallback keeps an invalid CLI path inside the stream error contract", 
     globalThis.fetch = originalFetch;
   }
 });
+test("Kiro API-key auth overrides saved OAuth credentials and targets the Kiro runtime API", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.KIRO_API_KEY;
+  const logs = [];
+  let request;
+  process.env.KIRO_API_KEY = "ksk_test_key";
+  try {
+    globalThis.fetch = async (url, options) => {
+      request = { url: String(url), ...options };
+      return new Response(JSON.stringify({ message: "monthly usage limit reached" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const stream = createKiroStream({
+      apiKey: "KIRO_API_KEY",
+      authMode: "api-key",
+      providerId: "kiro",
+      upstreamUrl: "https://runtime.us-east-1.kiro.dev/",
+      endpoint: "amazonq",
+      requestTimeoutMs: 1_000,
+      cliFallback: true,
+      kiroCliPath: "/definitely/missing/kiro-cli",
+      headers: {},
+      models: [],
+    }, {}, createLogger(logs))(createModel(), {
+      messages: [{ role: "user", content: "hello" }],
+    }, {
+      apiKey: "stale-oauth-token",
+      headers: { "x-kiro-profile-arn": "arn:aws:iam::123456789012:role/old-account" },
+    });
+
+    for await (const _event of stream) {
+      // Drain the stream so the direct API request completes.
+    }
+
+    const result = await stream.result();
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage, /monthly usage limit reached/);
+    assert.equal(request.url, "https://runtime.us-east-1.kiro.dev/");
+    assert.equal(request.headers.Authorization, "Bearer ksk_test_key");
+    assert.equal(request.headers.TokenType, "API_KEY");
+    assert.match(request.headers["User-Agent"], /appVersion-2\.10\.0/);
+    const payload = JSON.parse(request.body);
+    assert.equal(payload.conversationState.agentTaskType, "vibe");
+    assert.equal(payload.conversationState.currentMessage.userInputMessage.origin, "KIRO_CLI");
+    assert.equal("agentContinuationId" in payload.conversationState, false);
+    assert.equal("profileArn" in payload, false);
+    assert.equal(logs.some(({ event }) => event === "acp_fallback_failed"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.KIRO_API_KEY;
+    else process.env.KIRO_API_KEY = originalApiKey;
+  }
+});
+
 
 function encodeHeader(name, value) {
   const nameBytes = encoder.encode(name);

@@ -51,6 +51,8 @@ export interface KiroOAuthConfig {
 
 export type KiroEndpoint = "codewhisperer" | "amazonq";
 
+export type KiroAuthMode = "oauth" | "api-key";
+
 export interface ExtensionConfig {
   enabled: boolean;
   debug: boolean;
@@ -58,6 +60,7 @@ export interface ExtensionConfig {
   displayName: string;
   upstreamUrl: string;
   endpoint: KiroEndpoint;
+  authMode: KiroAuthMode;
   apiKey: string;
   requestTimeoutMs: number;
   cliFallback: boolean;
@@ -362,6 +365,7 @@ export function loadConfig(extensionRoot: string): ConfigLoadResult {
       displayName: stringOr(raw.displayName, "Kiro"),
       upstreamUrl,
       endpoint: endpointOr(raw.endpoint, upstreamUrl),
+      authMode: raw.authMode === "api-key" ? "api-key" : "oauth",
       apiKey: stringOr(raw.apiKey, "$KIRO_ACCESS_TOKEN"),
       cliFallback: booleanOr(raw.cliFallback, true),
       kiroCliPath: optionalString(raw.kiroCliPath),
